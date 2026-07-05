@@ -1,6 +1,6 @@
 //go:build windows
 
-// logi-revleds - drives the rev LEDs on a Logitech G steering wheel (G29/G27/G920)
+// logi-revleds - drives the rev LEDs on a Logitech G steering wheel (G29/G27/G923)
 // from BeamNG.drive telemetry sent by the companion "revleds" UDP protocol mod.
 package main
 
@@ -18,7 +18,12 @@ import (
 
 const (
 	defaultVID = 0x046D // Logitech
-	defaultPID = 0xC24F // G29 Driving Force Racing Wheel
+	defaultPID = 0xC24F // G29 Driving Force Racing Wheel (default target)
+	// Other Logitech G wheels with rev LEDs (select with -pid):
+	//   G27         0xC29B
+	//   G923 PS/PC  0xC266  (same classic LED command as the G29)
+	//   G923 Xbox   0xC26E  (HID++/TrueForce - classic command may not apply)
+	// The G920 (0xC262) has no rev LEDs and is not supported.
 	packetSize = 32
 	magic      = 0x47454C31
 )

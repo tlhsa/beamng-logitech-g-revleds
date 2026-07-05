@@ -241,9 +241,12 @@ func (w *ledWriter) MethodName() string {
 	}
 }
 
-// The Logitech G27/G29/G920 rev-LED command (confirmed against the Linux hid-lg4ff driver):
+// The classic Logitech rev-LED command (confirmed against the Linux hid-lg4ff
+// driver, which covers the G27 and G29):
 //   F8 12 <bitmask> 00 00 00 01
-// bitmask bits 0..4 map to the 5 rev LEDs (progressive fill).
+// bitmask bits 0..4 map to the 5 rev LEDs (progressive fill). The G923
+// (PlayStation/PC) accepts the same report; the Xbox G923 uses Logitech's newer
+// HID++/TrueForce protocol. The G920 has no rev LEDs.
 func ledCommand(mask byte) []byte {
 	return []byte{0xF8, 0x12, mask, 0x00, 0x00, 0x00, 0x01}
 }

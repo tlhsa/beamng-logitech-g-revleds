@@ -1,4 +1,4 @@
-# BeamNG.drive - Logitech G rev LEDs (G29 / G27 / G920)
+# BeamNG.drive - Logitech G rev LEDs (G29 / G27 / G923)
 
 Drives the rev/shift LEDs on a Logitech G steering wheel from BeamNG.drive engine
 RPM. It has two small parts:
@@ -20,6 +20,27 @@ switch cars. The first LED comes on at the `-start` fraction of that band
 them flash at the `-shift` point (default 97% of redline). Example: a car with
 idle 800 / redline 8750 gets the first LED at ~1595 rpm and flashing at ~8490 rpm.
 The app prints the derived band to the console whenever the car changes.
+
+## Supported wheels
+
+Works on Logitech G wheels that actually have rev/shift LEDs:
+
+| Wheel | USB PID | Notes |
+|-------|---------|-------|
+| **G29** | `0xC24F` | Default target. |
+| **G27** | `0xC29B` | |
+| **G923** (PS / PC) | `0xC266` | Uses the same classic LED command as the G29. |
+| **G923** (Xbox / PC) | `0xC26E` | Uses Logitech's newer HID++/TrueForce protocol - the classic command may not light the LEDs. |
+
+The **G920 is not supported**: the Xbox-only G920 has no rev LEDs on the wheel,
+so there is nothing to drive.
+
+The app defaults to the G29. For a G27 or G923, run `-list` to find the wheel,
+then pass its id with `-pid` (hex is accepted):
+```powershell
+.\logi-revleds.exe -list
+.\logi-revleds.exe -pid 0xC266   # e.g. G923 (PS/PC)
+```
 
 ## Installation
 
@@ -84,8 +105,9 @@ logi-revleds.exe [options]
 ```
 
 ## Troubleshooting
-- **No LEDs:** run `-list`, then `-probe -index <N>` on each G29 interface
-  (PID `0xC24F`) until the LEDs react; use that one permanently with `-index <N>`.
+- **No LEDs:** run `-list`, then `-probe -index <N>` on each interface that matches
+  your wheel's PID until the LEDs react; use that one permanently with `-index <N>`
+  (add `-pid` for non-G29 wheels, e.g. `-pid 0xC266` for a G923 PS/PC).
 - **No data:** did you restart BeamNG? Are you seated in a car? If you changed the
   port, it must match in both the mod (`getPort` in
   `mod/lua/vehicle/protocols/revleds.lua`) and `-port`.
