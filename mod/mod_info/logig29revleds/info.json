@@ -4,6 +4,6 @@
   "version_string": "1.0",
   "authors": "logitech-g-leds",
   "username": "logitech-g-leds",
-  "tagid": "logig29revleds",
+  "tagid": "LOGIG29REVLEDS",
   "text": "[b]Logitech G Rev LEDs[/b]\nDrives the rev/shift LEDs on a Logitech G29 steering wheel from BeamNG engine RPM (only the G29 is tested; other Logitech G wheels with rev LEDs may work).\n\nThis mod adds a tiny UDP telemetry protocol that sends current RPM plus the car's redline. Run the companion app [b]logi-revleds.exe[/b] to light the wheel LEDs. The LED bar scales to each car's own idle->redline range, so it feels the same across vehicles.\n\nLEDs are driven via raw HID and do not interfere with the wheel's input or force feedback."
 }
