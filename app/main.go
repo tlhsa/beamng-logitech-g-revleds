@@ -13,6 +13,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -143,21 +145,15 @@ func main() {
 		return
 	}
 
-	dev, err := pickDevice(devs, uint16(*pid), *index, *pathSel)
+	dev, w, err := openWorkingWriter(devs, uint16(*pid), *index, *pathSel)
 	if err != nil {
 		fmt.Println("device selection failed:", err)
 		fmt.Println("run with -list to see available interfaces")
 		os.Exit(1)
 	}
-	fmt.Printf("using interface: %s\n  VID=%#04x PID=%#04x usagePage=%#x usage=%#x out=%d feat=%d\n",
-		dev.Path, dev.VID, dev.PID, dev.UsagePage, dev.Usage, dev.OutLen, dev.FeatLen)
-
-	w, err := openWriter(dev)
-	if err != nil {
-		fmt.Println("could not open wheel HID interface:", err)
-		os.Exit(1)
-	}
 	defer w.close()
+	fmt.Printf("using interface: %s\n  VID=%#04x PID=%#04x usagePage=%#x usage=%#x out=%d feat=%d transport=%s\n",
+		dev.Path, dev.VID, dev.PID, dev.UsagePage, dev.Usage, dev.OutLen, dev.FeatLen, w.MethodName())
 
 	cfg := config{
 		numLeds: *numLeds,
@@ -180,60 +176,124 @@ func printList(devs []hidDevice, pid uint16) {
 		fmt.Println("no matching Logitech HID interfaces found")
 		return
 	}
+	// Find the interface auto-selection would try first.
+	bestRank := 99
+	for _, d := range devs {
+		if r := deviceRank(d, pid); r < bestRank {
+			bestRank = r
+		}
+	}
+	best := -1
+	if bestRank <= 4 {
+		for i, d := range devs {
+			if deviceRank(d, pid) == bestRank {
+				best = i
+				break
+			}
+		}
+	}
 	fmt.Printf("%-3s %-6s %-6s %-9s %-7s %-4s %-4s %-4s  %s\n",
 		"idx", "VID", "PID", "usgPage", "usage", "in", "out", "feat", "path")
 	for i, d := range devs {
 		mark := " "
-		if d.PID == pid {
+		switch {
+		case i == best:
+			mark = ">"
+		case d.PID == pid:
 			mark = "*"
 		}
 		fmt.Printf("%s%-2d 0x%04x 0x%04x 0x%-7x 0x%-5x %-4d %-4d %-4d  %s\n",
 			mark, i, d.VID, d.PID, d.UsagePage, d.Usage, d.InLen, d.OutLen, d.FeatLen, d.Path)
 	}
-	fmt.Println("\n(* = matches the target PID; pick one with -index N or -path <path>)")
+	fmt.Println("\n(> = interface auto-selection uses, * = matches the target PID; pick one with -index N or -path <path>)")
 }
 
-func pickDevice(devs []hidDevice, pid uint16, index int, path string) (hidDevice, error) {
+// deviceRank scores an interface for automatic selection (lower is better).
+//
+// The rev-LED command (F8 12 ...) is a native output report on the wheel's main
+// joystick interface. On Windows that is the Generic Desktop / Joystick
+// collection (usage page 0x01, usage 0x04; e.g. "mi_00"), the same one the
+// Linux hid-lg4ff driver and other G29 tools use. Logitech wheels also expose
+// vendor collections (usage page 0xFF00) that Windows lists with an output
+// report length but which do not accept the LED command, so they rank lower.
+func deviceRank(d hidDevice, pid uint16) int {
+	switch {
+	case d.PID == pid && d.UsagePage == 0x01 && d.Usage == 0x04:
+		return 0 // main joystick interface (G29/G27 rev LEDs)
+	case d.PID == pid && d.UsagePage == 0x01:
+		return 1 // generic-desktop main interface (usage varies per wheel)
+	case d.PID == pid && d.OutLen >= 8:
+		return 2 // out-capable vendor collection: last-resort PID match
+	case d.PID == pid:
+		return 3
+	case d.OutLen >= 8:
+		return 4 // no PID match: anything that can take an output report
+	default:
+		return 5
+	}
+}
+
+// candidateDevices returns the interfaces to try, best first. An explicit
+// -index or -path restricts the list to exactly that interface.
+func candidateDevices(devs []hidDevice, pid uint16, index int, path string) ([]hidDevice, error) {
 	if path != "" {
 		if d, err := queryDevice(path); err == nil {
-			return d, nil
+			return []hidDevice{d}, nil
 		}
-		return hidDevice{Path: path, OutLen: 8, FeatLen: 8}, nil
+		return []hidDevice{{Path: path, OutLen: 8, FeatLen: 8}}, nil
 	}
 	if index >= 0 {
 		if index >= len(devs) {
-			return hidDevice{}, fmt.Errorf("index %d out of range (%d interfaces)", index, len(devs))
+			return nil, fmt.Errorf("index %d out of range (%d interfaces)", index, len(devs))
 		}
-		return devs[index], nil
+		return []hidDevice{devs[index]}, nil
 	}
-	// auto: prefer the PID match that can take an 8-byte output report (the main wheel interface)
-	var pidMatch, outCapable, any *hidDevice
-	for i := range devs {
-		d := &devs[i]
-		if any == nil {
-			any = d
-		}
-		if d.PID == pid {
-			if d.OutLen >= 8 {
-				return *d, nil
-			}
-			if pidMatch == nil {
-				pidMatch = d
-			}
-		}
-		if d.OutLen >= 8 && outCapable == nil {
-			outCapable = d
-		}
+	if len(devs) == 0 {
+		return nil, fmt.Errorf("no Logitech HID interfaces present")
 	}
-	switch {
-	case pidMatch != nil:
-		return *pidMatch, nil
-	case outCapable != nil:
-		return *outCapable, nil
-	case any != nil:
-		return *any, nil
+	cands := append([]hidDevice(nil), devs...)
+	sort.SliceStable(cands, func(i, j int) bool {
+		return deviceRank(cands[i], pid) < deviceRank(cands[j], pid)
+	})
+	return cands, nil
+}
+
+// shortPath trims a device interface path to its informative part, e.g.
+// "hid#vid_046d&pid_c24f&mi_00#7&3b2a7b87&1&0000".
+func shortPath(p string) string {
+	p = strings.TrimPrefix(p, `\\?\`)
+	if i := strings.IndexByte(p, '{'); i > 0 {
+		p = p[:i]
 	}
-	return hidDevice{}, fmt.Errorf("no Logitech HID interfaces present")
+	return strings.TrimSuffix(p, "#")
+}
+
+// openWorkingWriter picks a wheel interface and verifies it by writing an
+// all-LEDs-off report. Auto-selection walks the ranked candidates until one
+// accepts the LED command, so a writable-looking vendor collection cannot
+// silently win. Every failed attempt is reported with its Win32 error.
+func openWorkingWriter(devs []hidDevice, pid uint16, index int, path string) (hidDevice, *ledWriter, error) {
+	cands, err := candidateDevices(devs, pid, index, path)
+	if err != nil {
+		return hidDevice{}, nil, err
+	}
+	var failures []string
+	for _, d := range cands {
+		w, err := openWriter(d)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: open failed: %v", shortPath(d.Path), err))
+			continue
+		}
+		if err := w.setMask(0); err != nil {
+			failures = append(failures, fmt.Sprintf("%s (usgPage=%#x usage=%#x out=%d): %v",
+				shortPath(d.Path), d.UsagePage, d.Usage, d.OutLen, err))
+			w.close()
+			continue
+		}
+		return d, w, nil
+	}
+	return hidDevice{}, nil, fmt.Errorf("no interface accepted the LED command:\n    %s",
+		strings.Join(failures, "\n    "))
 }
 
 func runProbe(w *ledWriter, cfg config) {

@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -80,17 +81,27 @@ func utf16PtrToString(p *uint16) string {
 	if p == nil {
 		return ""
 	}
-	var buf []uint16
-	ptr := uintptr(unsafe.Pointer(p))
-	for {
-		c := *(*uint16)(unsafe.Pointer(ptr))
-		if c == 0 {
-			break
-		}
-		buf = append(buf, c)
-		ptr += 2
+	// Measure up to the terminating NUL without uintptr arithmetic, then
+	// convert in one step.
+	n := 0
+	for ptr := unsafe.Pointer(p); *(*uint16)(ptr) != 0; ptr = unsafe.Add(ptr, 2) {
+		n++
 	}
-	return syscall.UTF16ToString(buf)
+	return syscall.UTF16ToString(unsafe.Slice(p, n))
+}
+
+// winErr formats the result of a Win32 BOOL-returning call. The syscall
+// package renders Errno values with their Windows message (e.g. 87 ->
+// "The parameter is incorrect."), which is what makes LED write failures
+// diagnosable.
+func winErr(what string, err error) error {
+	if errno, ok := err.(syscall.Errno); ok && errno == 0 {
+		return fmt.Errorf("%s returned FALSE (no Win32 error code)", what)
+	}
+	if err == nil {
+		return fmt.Errorf("%s returned FALSE", what)
+	}
+	return fmt.Errorf("%s: %w", what, err)
 }
 
 func openPath(path string) (syscall.Handle, error) {
@@ -243,10 +254,15 @@ func (w *ledWriter) MethodName() string {
 
 // The classic Logitech rev-LED command (in the Linux hid-lg4ff driver, which
 // drives the LEDs on the G27 and G29):
-//   F8 12 <bitmask> 00 00 00 01
-// bitmask bits 0..4 map to the 5 rev LEDs (progressive fill). Only the G29 is
-// tested here; the G27 uses the same command so it should work. The G923 is
-// unverified (the Xbox G923 uses HID++/TrueForce). The G920 has no rev LEDs.
+//
+//	F8 12 <bitmask> 00 00 00 01
+//
+// bitmask bits 0..4 map to the 5 rev LEDs (progressive fill). The command is a
+// native output report that must be sent to the wheel's main joystick
+// interface (usage page 0x01), not to its vendor-specific collections. Only
+// the G29 is tested here; the G27 uses the same command so it should work. The
+// G923 is unverified (the Xbox G923 uses HID++/TrueForce). The G920 has no rev
+// LEDs.
 func ledCommand(mask byte) []byte {
 	return []byte{0xF8, 0x12, mask, 0x00, 0x00, 0x00, 0x01}
 }
@@ -266,10 +282,7 @@ func (w *ledWriter) setOutputReport(buf []byte) error {
 	r, _, err := procHidD_SetOutputReport.Call(uintptr(w.h),
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	if r == 0 {
-		if err != nil && err != syscall.Errno(0) {
-			return err
-		}
-		return fmt.Errorf("HidD_SetOutputReport returned FALSE")
+		return winErr(fmt.Sprintf("HidD_SetOutputReport(%d bytes)", len(buf)), err)
 	}
 	return nil
 }
@@ -278,17 +291,17 @@ func (w *ledWriter) setFeature(buf []byte) error {
 	r, _, err := procHidD_SetFeature.Call(uintptr(w.h),
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	if r == 0 {
-		if err != nil && err != syscall.Errno(0) {
-			return err
-		}
-		return fmt.Errorf("HidD_SetFeature returned FALSE")
+		return winErr(fmt.Sprintf("HidD_SetFeature(%d bytes)", len(buf)), err)
 	}
 	return nil
 }
 
 func (w *ledWriter) writeFile(buf []byte) error {
 	var n uint32
-	return syscall.WriteFile(w.h, buf, &n, nil)
+	if err := syscall.WriteFile(w.h, buf, &n, nil); err != nil {
+		return fmt.Errorf("WriteFile(%d bytes): %w", len(buf), err)
+	}
+	return nil
 }
 
 // setMask lights the given rev-LED bitmask, auto-detecting the transport on first use.
@@ -307,18 +320,30 @@ func (w *ledWriter) setMask(mask byte) error {
 		return w.setFeature(featBuf)
 	}
 
-	// method unknown: try each until one succeeds, then latch it.
-	if err := w.setOutputReport(outBuf); err == nil {
+	// method unknown: try each until one succeeds, then latch it. Keep every
+	// failure (including its Win32 code) so the caller can report the reason.
+	var attempts []string
+	err := w.setOutputReport(outBuf)
+	if err == nil {
 		w.method = 1
 		return nil
 	}
-	if err := w.writeFile(outBuf); err == nil {
+	attempts = append(attempts, err.Error())
+
+	err = w.writeFile(outBuf)
+	if err == nil {
 		w.method = 2
 		return nil
 	}
-	if err := w.setFeature(featBuf); err == nil {
+	attempts = append(attempts, err.Error())
+
+	err = w.setFeature(featBuf)
+	if err == nil {
 		w.method = 3
 		return nil
 	}
-	return fmt.Errorf("all HID write methods failed for this interface")
+	attempts = append(attempts, err.Error())
+
+	return fmt.Errorf("all HID write methods failed (out report %d bytes, feat report %d bytes): %s",
+		len(outBuf), len(featBuf), strings.Join(attempts, "; "))
 }

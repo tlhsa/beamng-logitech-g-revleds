@@ -106,9 +106,11 @@ logi-revleds.exe [options]
 ```
 
 ## Troubleshooting
-- **No LEDs:** run `-list`, then `-probe -index <N>` on each G29 interface
-  (PID `0xC24F`) until the LEDs react; use that one permanently with `-index <N>`.
-  On a non-G29 wheel (untested), add `-pid <your wheel's id>` - if nothing lights,
+- **No LEDs:** run `-probe`. The helper auto-selects the wheel's main joystick
+  interface and, if no interface accepts the LED command, reports every attempt
+  with its Windows error. `-list` marks the interface it will use with `>`. You
+  can still force one explicitly with `-index <N>` or `-path <path>`. On a
+  non-G29 wheel (untested), add `-pid <your wheel's id>` - if nothing lights,
   that wheel likely doesn't accept this command.
 - **No data:** did you restart BeamNG? Are you seated in a car? If you changed the
   port, it must match in both the mod (`getPort` in
